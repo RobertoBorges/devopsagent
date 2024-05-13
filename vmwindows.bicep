@@ -6,12 +6,6 @@ param adminUsername string
 @secure()
 param adminPassword string
 
-@description('Unique DNS Name for the Public IP used to access the Virtual Machine.')
-param dnsLabelPrefix string = toLower('${vmName}-${uniqueString(resourceGroup().id, vmName)}')
-
-@description('Name for the Public IP used to access the Virtual Machine.')
-param publicIpName string = 'myPublicIP'
-
 @description('Allocation method for the Public IP used to access the Virtual Machine.')
 @allowed([
   'Dynamic'
@@ -42,14 +36,14 @@ param location string = resourceGroup().location
 param vmName string = 'devopsagent'
 
 @description('Indicator to guide whether the CI/CD agent script should be run or not')
-param deployAgent bool=true
+param deployAgent bool = true
 
 @description('The Azure DevOps or GitHub account name')
-param accountName string=''
+param accountName string = ''
 
 @description('The personal access token to connect to Azure DevOps or Github')
 @secure()
-param personalAccessToken string=''
+param personalAccessToken string = ''
 
 @description('The name Azure DevOps or GitHub pool for this build agent to join. Use \'Default\' if you don\'t have a separate pool.')
 param poolName string = 'Default'
@@ -58,18 +52,56 @@ param poolName string = 'Default'
 @allowed([
   'azuredevops'
 ])
-param CICDAgentType string='azuredevops'
+param CICDAgentType string = 'azuredevops'
 
-var AgentName = 'agent-${vmName}'
+@allowed(['linux', 'windows'])
+param os string = 'linux'
 
-param artifactsLocation string = 'https://raw.githubusercontent.com/RobertoBorges/devopsagent/master/agentsetup.sh'
-
-var nicName = 'myVMNic'
+var vmNameWithOs = '${vmName}-${os}'
+var agentName = 'agent-${vmNameWithOs}'
+var nicName = 'myVMNic-${vmNameWithOs}'
 var addressPrefix = '10.0.0.0/16'
 var subnetName = 'Subnet'
 var subnetPrefix = '10.0.0.0/24'
-var virtualNetworkName = 'MyVNET'
-var networkSecurityGroupName = 'default-NSG'
+var virtualNetworkName = 'MyVNET-${vmNameWithOs}'
+var networkSecurityGroupName = 'default-NSG-${vmNameWithOs}'
+var publicIpName = 'myPublicIP-${vmNameWithOs}'
+
+var dnsLabelPrefix = toLower('${vmName}-${take(os, 3)}-${uniqueString(resourceGroup().id, vmName)}')
+
+var osSettings = {
+  linux: {
+    image: {
+      publisher: 'canonical'
+      offer: '0001-com-ubuntu-server-focal'
+      sku: OSVersion
+      version: 'latest'
+    }
+    script: {
+      file: 'https://raw.githubusercontent.com/martins-vds/devopsagent/master/agentsetup.sh'
+      settings: {
+        skipDos2Unix: false
+        fileUris: [
+          'https://raw.githubusercontent.com/martins-vds/devopsagent/master/agentsetup.sh'
+        ]
+      }
+      command: 'chmod +x agentsetup.sh | ./agentsetup.sh ${accountName} ${personalAccessToken} ${poolName} ${agentName} ${CICDAgentType} '
+    }
+  }
+  windows: {
+    image: {
+      publisher: 'MicrosoftWindowsServer'
+      offer: 'WindowsServer'
+      sku: '2022-datacenter-azure-edition'
+      version: 'latest'
+    }
+    script: {
+      file: 'https://raw.githubusercontent.com/martins-vds/devopsagent/master/agentsetup.ps1'
+      settings: {}
+      command: 'powershell -ExecutionPolicy Unrestricted -File agentsetup.ps1 -URL ${accountName} -PAT ${personalAccessToken} -POOL ${poolName} -AGENT ${agentName} -AGENTTYPE ${CICDAgentType}'
+    }
+  }
+}
 
 resource pip 'Microsoft.Network/publicIPAddresses@2021-02-01' = {
   name: publicIpName
@@ -152,24 +184,19 @@ resource nic 'Microsoft.Network/networkInterfaces@2021-02-01' = {
 }
 
 resource vm 'Microsoft.Compute/virtualMachines@2021-03-01' = {
-  name: vmName
+  name: vmNameWithOs
   location: location
   properties: {
     hardwareProfile: {
       vmSize: vmSize
     }
     osProfile: {
-      computerName: vmName
+      computerName: take(vmNameWithOs, 15)
       adminUsername: adminUsername
       adminPassword: adminPassword
     }
     storageProfile: {
-      imageReference: {
-        publisher: 'canonical'
-        offer: '0001-com-ubuntu-server-focal'
-        sku: OSVersion
-        version: 'latest'
-      }
+      imageReference: osSettings[os].image
       osDisk: {
         createOption: 'FromImage'
         managedDisk: {
@@ -206,27 +233,21 @@ resource vm_CustomScript 'Microsoft.Compute/virtualMachines/extensions@2021-04-0
   name: 'CustomScript'
   location: location
   properties: {
-    publisher: 'Microsoft.Azure.Extensions'
-    type: 'CustomScript'
-    typeHandlerVersion: '2.1'
+    publisher: (os == 'linux' ? 'Microsoft.Azure.Extensions' : 'Microsoft.Compute')
+    type: (os == 'linux' ? 'CustomScript' : 'CustomScriptExtension')
+    typeHandlerVersion: (os == 'linux' ? '2.1' : '1.10')
     autoUpgradeMinorVersion: true
-    settings: {
-      skipDos2Unix: false
-      fileUris: [
-        artifactsLocation
-      ]   
-    }
+    settings: osSettings[os].script.settings
     protectedSettings: {
       fileUris: [
-        artifactsLocation
-      ]               
-      commandToExecute: 'chmod +x agentsetup.sh | ./agentsetup.sh ${accountName} ${personalAccessToken} ${poolName} ${AgentName} ${CICDAgentType} '
+        osSettings[os].script.file
+      ]
+      commandToExecute: osSettings[os].script.command
     }
   }
 }
 
 // outputs
 output id string = vm.id
-
 
 output hostname string = pip.properties.dnsSettings.fqdn
