@@ -14,12 +14,12 @@ setup_az_devops() {
     AGENT=$4
 
     echo "About to install components"
-
-    # Install Azure CLI
-    curl -sL https://aka.ms/InstallAzureCLIDeb | sudo bash
-
+    
     # Install JDK and Node.js
     sudo apt-get update
+    
+    # Install Azure CLI
+    curl -sL https://aka.ms/InstallAzureCLIDeb | sudo bash
 
     # installing other dependencies
     sudo apt-get install -y openjdk-17-jdk
